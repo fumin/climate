@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -23,8 +24,8 @@ type RawDatum struct {
 }
 
 // https://nsidc.org/arcticseaicenews/sea-ice-tools/
-func readOkhotsk() ([]RawDatum, error) {
-	f, err := os.Open("okhotsk.csv")
+func readOkhotsk(fpath string) ([]RawDatum, error) {
+	f, err := os.Open(fpath)
 	if err != nil {
 		return nil, errors.Wrap(err, "")
 	}
@@ -79,8 +80,8 @@ func readOkhotsk() ([]RawDatum, error) {
 }
 
 // https://github.com/Raingel/historical_weather
-func readTaiwan() ([]RawDatum, error) {
-	f, err := os.Open("danshui.csv")
+func readTaiwan(fpath string) ([]RawDatum, error) {
+	f, err := os.Open(fpath)
 	if err != nil {
 		return nil, errors.Wrap(err, "")
 	}
@@ -120,16 +121,108 @@ func readTaiwan() ([]RawDatum, error) {
 	return data, nil
 }
 
+// https://www.data.jma.go.jp/gmd/risk/obsdl/index.php
+func readJapan(fname string) ([]RawDatum, error) {
+	f, err := os.Open(fname)
+	if err != nil {
+		return nil, errors.Wrap(err, "")
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+
+	// Header.
+	if _, err := r.Read(); err != nil {
+		return nil, errors.Wrap(err, "")
+	}
+
+	data := make([]RawDatum, 0)
+	var i int = 1
+	for {
+		i++
+		row, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("%d", i))
+		}
+
+		t, err := time.Parse("1/2/2006", row[0])
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("%d", i))
+		}
+		d := RawDatum{t: t, empty: true}
+
+		if row[1] != "" {
+			d.v, err = strconv.ParseFloat(row[1], 64)
+			if err != nil {
+				return nil, errors.Wrap(err, fmt.Sprintf("%d", i))
+			}
+			d.empty = false
+		}
+
+		data = append(data, d)
+	}
+
+	return data, nil
+}
+
+// https://www.ncei.noaa.gov/access/search/data-search/global-summary-of-the-day
+func readGSOD(fname string) ([]RawDatum, error) {
+	f, err := os.Open(fname)
+	if err != nil {
+		return nil, errors.Wrap(err, "")
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+
+	// Header.
+	if _, err := r.Read(); err != nil {
+		return nil, errors.Wrap(err, "")
+	}
+
+	data := make([]RawDatum, 0)
+	var i int = 1
+	for {
+		i++
+		row, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("%d", i))
+		}
+
+		t, err := time.Parse("2006-01-02", row[1])
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("%d", i))
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(row[2]), 64)
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("%d", i))
+		}
+		v = (v - 32) * 5 / 9 // fahrenheit to celsius
+		d := RawDatum{t: t, v: v}
+
+		data = append(data, d)
+	}
+
+	return data, nil
+}
+
 type Datum struct {
-	t       time.Time
-	danshui float64
-	okhotsk float64
+	t        time.Time
+	danshui  float64
+	okhotsk  float64
+	katsuura float64
+	nemuro   float64
+	yelizovo float64
 }
 
 func write(dst string, data []Datum) error {
 	b := bytes.NewBuffer(nil)
 	w := csv.NewWriter(b)
-	row := []string{"t", "danshui", "okhotsk"}
+	row := []string{"t", "danshui", "okhotsk", "katsuura", "nemuro", "yelizovo"}
 	if err := w.Write(row); err != nil {
 		return errors.Wrap(err, "")
 	}
@@ -138,6 +231,9 @@ func write(dst string, data []Datum) error {
 		row[0] = d.t.Format(time.DateOnly)
 		row[1] = strconv.FormatFloat(d.danshui, 'f', -1, 64)
 		row[2] = strconv.FormatFloat(d.okhotsk, 'f', -1, 64)
+		row[3] = strconv.FormatFloat(d.katsuura, 'f', -1, 64)
+		row[4] = strconv.FormatFloat(d.nemuro, 'f', -1, 64)
+		row[5] = strconv.FormatFloat(d.yelizovo, 'f', 1, 64)
 		if err := w.Write(row); err != nil {
 			return errors.Wrap(err, "")
 		}
@@ -163,11 +259,23 @@ func main() {
 }
 
 func mainWithErr() error {
-	okhotsk, err := readOkhotsk()
+	okhotsk, err := readOkhotsk("data/okhotsk.csv")
 	if err != nil {
 		return errors.Wrap(err, "")
 	}
-	danshui, err := readTaiwan()
+	danshui, err := readTaiwan("data/danshui.csv")
+	if err != nil {
+		return errors.Wrap(err, "")
+	}
+	katsuura, err := readJapan("data/katsuura.csv")
+	if err != nil {
+		return errors.Wrap(err, "")
+	}
+	nemuro, err := readJapan("data/nemuro.csv")
+	if err != nil {
+		return errors.Wrap(err, "")
+	}
+	yelizovo, err := readGSOD("data/yelizovo.csv")
 	if err != nil {
 		return errors.Wrap(err, "")
 	}
@@ -178,6 +286,21 @@ func mainWithErr() error {
 		okhotskM[s] = d
 	}
 	danshuiM := make(map[string]struct{}, len(danshui))
+	katsuuraM := make(map[string]RawDatum, len(katsuura))
+	for _, d := range katsuura {
+		s := d.t.Format(time.DateOnly)
+		katsuuraM[s] = d
+	}
+	nemuroM := make(map[string]RawDatum, len(nemuro))
+	for _, d := range nemuro {
+		s := d.t.Format(time.DateOnly)
+		nemuroM[s] = d
+	}
+	yelizovoM := make(map[string]RawDatum, len(yelizovo))
+	for _, d := range yelizovo {
+		s := d.t.Format(time.DateOnly)
+		yelizovoM[s] = d
+	}
 	joined := make([]Datum, 0, len(danshui))
 	for _, d := range danshui {
 		s := d.t.Format(time.DateOnly)
@@ -193,12 +316,27 @@ func mainWithErr() error {
 			continue
 		}
 
+		// Ignore data without katsuura and nemuro.
+		kd, ok := katsuuraM[s]
+		if !ok || kd.empty {
+			continue
+		}
+		nd, ok := nemuroM[s]
+		if !ok || nd.empty {
+			continue
+		}
+
+		yd, ok := yelizovoM[s]
+		if !ok {
+			continue
+		}
+
 		//Ignore outlier temperatures.
 		if d.v < -90 {
 			continue
 		}
 
-		joined = append(joined, Datum{t: d.t, danshui: d.v, okhotsk: od.v})
+		joined = append(joined, Datum{t: d.t, danshui: d.v, okhotsk: od.v, katsuura: kd.v, nemuro: nd.v, yelizovo: yd.v})
 	}
 
 	if err := write("data.csv", joined); err != nil {
